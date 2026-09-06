@@ -67,6 +67,8 @@ pub(crate) struct WinitAppRunnerState {
     ran_update_since_last_redraw: bool,
     /// Is `true` if enough time has elapsed since `last_update` to run another update.
     wait_elapsed: bool,
+    /// Bevy's wait before a native handler shortened the loop deadline.
+    native_wait_override: Option<ControlFlow>,
     /// Number of "forced" updates to trigger on application start
     startup_forced_updates: u32,
 
@@ -122,6 +124,7 @@ impl WinitAppRunnerState {
             redraw_requested: false,
             ran_update_since_last_redraw: false,
             wait_elapsed: false,
+            native_wait_override: None,
             // 3 seems to be enough, 5 is a safe margin
             startup_forced_updates: 5,
             bevy_window_events: Vec::new(),
@@ -151,6 +154,12 @@ impl ApplicationHandler<WinitUserEvent> for WinitAppRunnerState {
         if event_loop.exiting() {
             return;
         }
+        // A toolkit deadline wakes the OS loop without consuming Bevy's own
+        // reactive update deadline. Restore that flow before processing events.
+        let native_wait_override = self.native_wait_override.take();
+        if let Some(flow) = native_wait_override {
+            event_loop.set_control_flow(flow);
+        }
         self.with_native_handler(|handler| handler.new_events(event_loop, cause));
 
         #[cfg(feature = "trace")]
@@ -167,17 +176,27 @@ impl ApplicationHandler<WinitUserEvent> for WinitAppRunnerState {
             self.redraw_requested = true;
         }
 
-        self.wait_elapsed = match cause {
-            StartCause::WaitCancelled {
-                requested_resume, ..
-            } => {
-                // If the resume time is not after now, it means that at least the wait timeout
-                // has elapsed. Alternatively, if the resume time is unset, the wait never elapses.
-                requested_resume
-                    .map(|resume| resume <= Instant::now())
-                    .unwrap_or_default()
-            }
-            _ => true,
+        self.wait_elapsed = match (cause, native_wait_override) {
+            (
+                StartCause::WaitCancelled { .. } | StartCause::ResumeTimeReached { .. },
+                Some(flow),
+            ) => match flow {
+                ControlFlow::Poll => true,
+                ControlFlow::Wait => false,
+                ControlFlow::WaitUntil(deadline) => deadline <= Instant::now(),
+            },
+            (cause, _) => match cause {
+                StartCause::WaitCancelled {
+                    requested_resume, ..
+                } => {
+                    // If the resume time is not after now, it means that at least the wait timeout
+                    // has elapsed. Alternatively, if the resume time is unset, the wait never elapses.
+                    requested_resume
+                        .map(|resume| resume <= Instant::now())
+                        .unwrap_or_default()
+                }
+                _ => true,
+            },
         };
     }
 
@@ -504,7 +523,11 @@ impl ApplicationHandler<WinitUserEvent> for WinitAppRunnerState {
                 self.redraw_requested(event_loop);
             }
         }
+        let bevy_flow = event_loop.control_flow();
         self.with_native_handler(|handler| handler.about_to_wait(event_loop));
+        if event_loop.control_flow() != bevy_flow {
+            self.native_wait_override = Some(bevy_flow);
+        }
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {

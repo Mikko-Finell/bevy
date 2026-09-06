@@ -32,6 +32,7 @@ pub trait NativeEventCallbacks: 'static {
     ) {
     }
     /// Called after Bevy's ordinary wait decision and frame scheduling.
+    // The runner preserves its original wake deadline if this callback changes it.
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {}
     /// Called after native windows have been created on resume.
     fn resumed(&mut self, _event_loop: &ActiveEventLoop) {}
