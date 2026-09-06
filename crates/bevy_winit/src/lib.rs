@@ -44,6 +44,8 @@ use crate::{
 pub mod accessibility;
 pub mod converters;
 mod cursor;
+mod native_event_handler;
+pub use native_event_handler::{NativeEventCallbacks, NativeEventHandler};
 mod state;
 mod system;
 mod winit_config;
