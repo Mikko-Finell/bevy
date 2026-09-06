@@ -95,6 +95,16 @@ pub(crate) struct WinitAppRunnerState {
 }
 
 impl WinitAppRunnerState {
+    fn with_native_handler(&mut self, callback: impl FnOnce(&mut dyn crate::NativeEventCallbacks)) {
+        if let Some(mut handler) = self
+            .app
+            .world_mut()
+            .get_non_send_mut::<crate::NativeEventHandler>()
+        {
+            callback(handler.0.as_mut());
+        }
+    }
+
     fn new(mut app: App) -> Self {
         let windows_system_state: SystemState<
             Query<(&mut Window, &mut CachedWindow, &mut WinitWindowPressedKeys)>,
@@ -141,6 +151,7 @@ impl ApplicationHandler<WinitUserEvent> for WinitAppRunnerState {
         if event_loop.exiting() {
             return;
         }
+        self.with_native_handler(|handler| handler.new_events(event_loop, cause));
 
         #[cfg(feature = "trace")]
         let _span = tracing::info_span!("winit event_handler").entered();
@@ -179,6 +190,7 @@ impl ApplicationHandler<WinitUserEvent> for WinitAppRunnerState {
         let mut create_window = SystemState::<CreateWindowParams>::from_world(self.world_mut());
         create_windows(event_loop, create_window.get_mut(self.world_mut()).unwrap());
         create_window.apply(self.world_mut());
+        self.with_native_handler(|handler| handler.resumed(event_loop));
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: WinitUserEvent) {
@@ -203,6 +215,7 @@ impl ApplicationHandler<WinitUserEvent> for WinitAppRunnerState {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        self.with_native_handler(|handler| handler.window_event(_event_loop, window_id, &event));
         self.window_event_received = true;
 
         #[cfg_attr(
@@ -491,15 +504,18 @@ impl ApplicationHandler<WinitUserEvent> for WinitAppRunnerState {
                 self.redraw_requested(event_loop);
             }
         }
+        self.with_native_handler(|handler| handler.about_to_wait(event_loop));
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        self.with_native_handler(|handler| handler.suspended(_event_loop));
         // Mark the state as `WillSuspend`. This will let the schedule run one last time
         // before actually suspending to let the application react
         self.lifecycle = AppLifecycle::WillSuspend;
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.with_native_handler(|handler| handler.exiting(_event_loop));
         // Drop windows while event loop is still active, before TLS destruction.
         // Prevents panic on macOS when exiting from exclusive fullscreen.
         WINIT_WINDOWS.with(|ww| ww.borrow_mut().windows.clear());
